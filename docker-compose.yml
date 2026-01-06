@@ -1,0 +1,31 @@
+version: '3.8'
+services:
+  rotface:
+    build:
+      context: .
+      args:
+        USE_GPU: "${USE_GPU:-0}"
+    image: rotface:latest
+    restart: unless-stopped
+    volumes:
+      - ./:/workspace:rw
+      - ./output:/workspace/output:rw
+      - ./runs:/workspace/runs:rw
+    working_dir: /workspace
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video,graphics
+      - PYTHONUSERBASE=/piplib
+      - DISPLAY=${DISPLAY}
+      - WAYLAND_DISPLAY=${WAYLAND_DISPLAY}
+      - XDG_RUNTIME_DIR=/tmp
+      - PULSE_SERVER=${PULSE_SERVER}
+    deploy: {}
+    device_requests:
+      - driver: nvidia
+        count: all
+        capabilities: [ "gpu" ]
+    ports:
+      - "6006:6006" # tensorboard
+    command: bash -c "sleep infinity"
