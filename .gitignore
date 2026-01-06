@@ -174,6 +174,7 @@ cython_debug/
 
 # Input and intermediate data (can be large)
 /input_videos/
+/data/
 /data/raw_frames/
 /data/detected_faces/
 /data/train_val_split/
