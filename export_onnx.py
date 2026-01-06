@@ -11,6 +11,7 @@ def parse_args():
     parser.add_argument('--network', default='mobile0.25', help='Backbone network mobile0.25 or resnet50')
     parser.add_argument('--long_side', type=int, default=640, help='when origin_size is false, long_side is scaled size(320 or 640 for long side)')
     parser.add_argument('--cpu', action="store_true", default=False, help='Use cpu inference')
+    parser.add_argument('--output', default=None, type=str, help='Output ONNX file path (overrides default)')
 
     return parser.parse_args()
 
@@ -36,7 +37,9 @@ def remove_prefix(state_dict, prefix):
 def load_model(model, pretrained_path, load_to_cpu):
     print("load_to_cpu", load_to_cpu)
     print('Loading pretrained model from {}'.format(pretrained_path))
-    if load_to_cpu:
+    
+    # Try CUDA if not forced to CPU, but fallback to CPU if CUDA unavailable
+    if load_to_cpu or not torch.cuda.is_available():
         pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
     else:
         device = torch.cuda.current_device()
@@ -63,6 +66,9 @@ if __name__ == '__main__':
     elif args.network == "resnet50":
         cfg = cfg_re50
         output_onnx = "weights/retinaface_resnet50.onnx"
+
+    if args.output is not None:
+        output_onnx = args.output
     
     # net and model
     net = RetinaFace(cfg=cfg, phase='test')
@@ -71,7 +77,14 @@ if __name__ == '__main__':
     print('Finished loading model!')
     print(net)
 
-    device = torch.device("cpu" if args.cpu else "cuda")
+    # Automatically fallback to CPU if CUDA unavailable (e.g., no GPU driver, or running in CPU-only container)
+    if args.cpu or not torch.cuda.is_available():
+        device = torch.device("cpu")
+        print("Using CPU device (CUDA not available)")
+    else:
+        device = torch.device("cuda")
+        print("Using CUDA device")
+    
     net = net.to(device)
 
     # ------------------------ export -----------------------------

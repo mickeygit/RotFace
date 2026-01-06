@@ -169,6 +169,14 @@ cython_debug/
 # Build outputs, exported models and runtime artifacts
 /output/
 /runs/
+/experiments/checkpoints/
+/experiments/logs/
+
+# Input and intermediate data (can be large)
+/input_videos/
+/data/raw_frames/
+/data/detected_faces/
+/data/train_val_split/
 
 # Saved original model weights stored by helper scripts
 /weights/original/

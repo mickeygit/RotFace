@@ -1,5 +1,6 @@
-numpy==1.25.0
-onnxruntime_gpu==1.15.1
+# keep only non-runtime deps here; GPU runtime installed explicitly in Dockerfile
+onnx==1.19.1
 opencv_python==4.7.0.72
-torch==2.0.1
-torchvision==0.15.2
+# Note: `torch` and `torchvision` are installed separately to match CUDA.
+# For GPU builds the Dockerfile will install a cu121 wheel (PyTorch 2.2.x + cu121).
+# For CPU-only builds install CPU wheels locally or modify this file to pin torch.
