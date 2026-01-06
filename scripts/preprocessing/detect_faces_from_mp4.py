@@ -26,7 +26,7 @@ import logging
 import re
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 import uuid
 from datetime import datetime
 
@@ -93,6 +93,7 @@ class LandmarkMapper:
         landmarks: np.ndarray,
         face_box: np.ndarray,
         output_size: int = 256
+        , annotations: Optional[List[Dict[str, Any]]] = None
     ) -> Image.Image:
         """
         顔画像と 5点ポイントを QA 作業用画像に描画
@@ -172,6 +173,28 @@ class LandmarkMapper:
                     fill='white'
                 )
         
+                # 注釈が指定されていれば、ポイント近傍にテキストで描画
+                if annotations is not None and i < len(annotations):
+                    ann = annotations[i]
+                    # 期待されるキー: 'orig' -> (x,y), 'rel' -> (rx,ry), 'eval' -> value
+                    orig = ann.get('orig')
+                    rel = ann.get('rel')
+                    ev = ann.get('eval')
+
+                    txt_lines = []
+                    if orig is not None:
+                        txt_lines.append(f"O:{int(orig[0])},{int(orig[1])}")
+                    if rel is not None:
+                        txt_lines.append(f"R:{rel[0]:.2f},{rel[1]:.2f}")
+                    if ev is not None:
+                        txt_lines.append(f"E:{ev}")
+
+                    # 描画位置を微調整して複数行を重ねる
+                    if txt_lines:
+                        txt_x = final_x + radius + 3
+                        txt_y = final_y + radius + 3
+                        for j, line in enumerate(txt_lines):
+                            draw.text((txt_x, txt_y + j * 12), line, fill='yellow')
         return pil_image
     
     @staticmethod
@@ -683,26 +706,48 @@ class FaceDetectionProcessor:
                 continue
             
             # ランドマーク用の QA 画像を生成・保存
+            landmarks = np.zeros((5, 2))
             if det_idx < len(landmarks_list):
                 landmarks = landmarks_list[det_idx]
-                qa_image = LandmarkMapper.draw_landmarks_on_image(
-                    rotated_frame, landmarks, bbox, output_size=256
-                )
-                qa_path = os.path.join(qa_dir, f"{face_id}_marked.png")
-                qa_image.save(qa_path)
+
+            # 相対座標・評価値を計算して注釈データを作成
+            lm_orig_dict = LandmarkMapper.landmarks_to_dict(landmarks)
+            face_w = max(1.0, float(face_width))
+            face_h = max(1.0, float(face_height))
+            lm_rel = {}
+            lm_evals = {}
+            annotations = []
+            for i, name in enumerate(LandmarkMapper.LANDMARK_NAMES):
+                lm_x, lm_y = float(landmarks[i, 0]), float(landmarks[i, 1])
+                rel_x = (lm_x - x1) / face_w
+                rel_y = (lm_y - y1) / face_h
+                # 初期状態ではランドマーク単体の評価値は存在しないため None を入れる
+                eval_val = None
+                lm_rel[name] = (rel_x, rel_y)
+                lm_evals[name] = eval_val
+                annotations.append({'orig': (lm_x, lm_y), 'rel': (rel_x, rel_y), 'eval': eval_val})
+
+            qa_image = LandmarkMapper.draw_landmarks_on_image(
+                rotated_frame, landmarks, bbox, output_size=256, annotations=annotations
+            )
+            qa_path = os.path.join(qa_dir, f"{face_id}_marked.png")
+            qa_image.save(qa_path)
             
             # メタデータ
             # bbox とランドマークは回転フレーム座標のままメタデータに保存
             # (フレーム描画時に逆変換する）
+            # メタデータ: 元座標・相対座標・評価値を属性として保存
             metadata_list.append({
                 'face_id': face_id,
                 'frame_id': frame_id,
                 'angle': angle,
                 'bbox': bbox.tolist(),
                 'confidence': float(confidence),
-                'landmarks': LandmarkMapper.landmarks_to_dict(
-                    landmarks if det_idx < len(landmarks_list) else np.zeros((5, 2))
-                )
+                'landmarks': LandmarkMapper.landmarks_to_dict(landmarks),
+                'landmarks_original': lm_orig_dict,
+                'landmarks_relative': lm_rel,
+                'landmark_evals': lm_evals,
+                'face_eval': float(confidence)
             })
             
             results['detected'] += 1
@@ -716,7 +761,14 @@ class FaceDetectionProcessor:
             existing = {}
         
         for meta in metadata_list:
-            existing[meta['face_id']] = meta
+            fid = meta['face_id']
+            if fid in existing:
+                # 既存エントリがある場合は、新規キーを追加する（既存値は上書きしない）
+                for k, v in meta.items():
+                    if k not in existing[fid]:
+                        existing[fid][k] = v
+            else:
+                existing[fid] = meta
         
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(existing, f, indent=2, ensure_ascii=False)
