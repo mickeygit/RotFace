@@ -14,10 +14,17 @@ docker run --rm --gpus all \
   --model-path /workspace/weights/original/Resnet50_Final.pth \
   --output-dir /workspace/data \
   --frame-skip 5 \
+  --min-confidence 0.9 \
+  --min-face-size 10 \
+  --network resnet50 \
   --auto-version-naming True
 ```
 
-- 出力: `data/detected_faces_vXXX/{original,rotated_90,...}/landmarks_qa/` に 128×128 の QA 画像
+- 出力: `data/detected_faces_vXXX/{original,rotated_90,rotated_180,rotated_270}/`
+  - `images/` — トリミング顔画像 (JPEG)
+  - `landmarks_qa/` — QA用マーカー描画画像（256x256 PNG）
+  - `frame_vis/` — フレーム全体可視化 (JPG、bbox+ランドマーク)
+  - `metadata.json` — bbox, landmarks, confidence
 
 ## 2) QA 確認（ホスト）
 - ファイルエクスプローラで `data/detected_faces_vXXX/*/landmarks_qa/` を開き、誤検知を削除
@@ -34,13 +41,11 @@ python tools/qa_cleanup.py --detected-dir data/detected_faces_v001 --remove-orph
 docker run --rm --gpus all \
   -v "$(pwd)/data:/workspace/data" \
   rotface:latest python scripts/preprocessing/create_dataset.py \
-  --detected-versions v001,v002 \
-  --output-version v002 \
-  --data-dir /workspace/data \
-  --train-ratio 0.8 \
-  --combine-previous True
-```
+  --detected_dir /workspace/data/detected_faces_v001 \
+  --output_dir /workspace/data/train_val_split_v001 \
+  --train_ratio 0.8
 
+- 出力: `data/train_val_split_v001/` と `dataset_manifest.json`
 - 出力: `data/train_val_split_v002/` と `dataset_manifest.json`
 
 ## 5) 学習実行（例）
@@ -51,13 +56,13 @@ docker run --rm --gpus all \
   -v "$(pwd)/weights/original:/workspace/weights/original" \
   -v "$(pwd)/experiments:/workspace/experiments" \
   rotface:latest python scripts/training/train.py \
-  --data_dir /workspace/data/train_val_split \
+  --data-dir /workspace/data/train_val_split \
   --pretrained /workspace/weights/original/Resnet50_Final.pth \
-  --session_id session_002 \
-  --dataset_version v002 \
+  --session-id session_002 \
+  --dataset-version v002 \
   --epochs 50 \
   --lr 0.0001 \
-  --checkpoint_dir /workspace/experiments/session_002
+  --checkpoint-dir /workspace/experiments/session_002
 ```
 
 ## 6) ONNX 変換
@@ -67,8 +72,9 @@ docker run --rm --gpus all \
   -v "$(pwd)/experiments/session_002/checkpoints:/workspace/models" \
   -v "$(pwd)/output/onnx:/workspace/output" \
   rotface:latest python scripts/export/export_to_onnx.py \
-  --model_path /workspace/models/best.pth \
-  --output_path /workspace/output/retinaface_final_v002.onnx
+  --model-path /workspace/models/best.pth \
+  --output-dir /workspace/output \
+  --network resnet50
 ```
 
 ---

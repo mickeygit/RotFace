@@ -6,17 +6,17 @@ MP4 からの顔検検知と 5点ポイントマッピング画像の生成
 - MP4 をフレームスキップしながら読み込み
 - GPU メモリ内で回転 (0°, 90°, 180°, 270°)
 - RetinaFace で顔検知
-- 5点ポイント（目・鼻・口）を描画した QA 作業用画像（128x128）を出力
+- 5点ポイント（目・鼻・口）を描画した QA 作業用画像（256x256 PNG）を出力
 - 検知結果（bbox, landmarks, metadata）を各回転ディレクトリに保存
 
 使用方法:
-    python scripts/preprocessing/detect_faces_from_mp4.py \
-      --video_path input_videos/video.mp4 \
-      --model_path weights/original/Resnet50_Final.pth \
-      --output_dir data/detected_faces \
-      --frame_skip 5 \
-      --min_confidence 0.9 \
-      --min_face_size 10
+        python scripts/preprocessing/detect_faces_from_mp4.py \
+            --video-path input_videos/video.mp4 \
+            --model-path weights/original/Resnet50_Final.pth \
+            --output-dir data/detected_faces \
+            --frame-skip 5 \
+            --min-confidence 0.9 \
+            --min-face-size 10
 """
 
 import os
@@ -24,6 +24,7 @@ import json
 import argparse
 import logging
 import re
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import uuid
@@ -34,6 +35,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
+
+# RetinaFace utilities
+from data.config import cfg_mnet, cfg_re50
+from layers.functions.prior_box import PriorBox
+from utils.nms.py_cpu_nms import py_cpu_nms
+from utils.box_utils import decode, decode_landm
+from models.retinaface import RetinaFace
 
 # ログ設定
 logging.basicConfig(
@@ -84,19 +92,19 @@ class LandmarkMapper:
         image: np.ndarray,
         landmarks: np.ndarray,
         face_box: np.ndarray,
-        output_size: int = 128
+        output_size: int = 256
     ) -> Image.Image:
         """
-        顔画像と 5点ポイントを QA 作業用画像（128x128）に描画
+        顔画像と 5点ポイントを QA 作業用画像に描画
         
         Args:
             image: 元画像（BGR, numpy array）
             landmarks: 5点座標 [5, 2] - 元画像座標
             face_box: バウンディングボックス [x1, y1, x2, y2]
-            output_size: 出力画像サイズ（デフォルト: 128）
+            output_size: 出力画像サイズ（デフォルト: 256） - より大きく見やすく
         
         Returns:
-            PIL.Image (RGB, 128x128)
+            PIL.Image (RGB, 256x256)
         """
         # 顔領域をトリミング
         x1, y1, x2, y2 = face_box.astype(int)
@@ -150,16 +158,16 @@ class LandmarkMapper:
             
             # 画像内に収まっているか確認
             if 0 <= final_x < output_size and 0 <= final_y < output_size:
-                # ポイント描画（赤い円 + ID）
-                radius = 4
+                # ポイント描画（赤い円 + ID） - より大きく見やすく
+                radius = 6
                 draw.ellipse(
                     [(final_x - radius, final_y - radius),
                      (final_x + radius, final_y + radius)],
-                    fill='red', outline='white'
+                    fill='red', outline='white', width=2
                 )
                 # ポイント ID を描画（1-indexed）
                 draw.text(
-                    (final_x + radius + 2, final_y - radius),
+                    (final_x + radius + 3, final_y - radius),
                     str(i + 1),
                     fill='white'
                 )
@@ -181,6 +189,115 @@ class LandmarkMapper:
             LandmarkMapper.LANDMARK_NAMES[i]: tuple(lm)
             for i, lm in enumerate(landmarks)
         }
+    
+    @staticmethod
+    def draw_landmarks_on_frame(
+        frame: np.ndarray,
+        detections: List[Dict[str, Any]],
+        output_path: str,
+        angle: int = 0
+    ) -> None:
+        """
+        元のフレーム全体に bbox と 5点ランドマークを描画して保存
+        
+        Args:
+            frame: 元フレーム (BGR, numpy array) - 回転前のオリジナル
+            detections: 検知結果リスト [{'bbox': [...], 'landmarks': [...], 'face_id': '...'}, ...]
+            output_path: 出力ファイルパス
+            angle: 回転角度 (0, 90, 180, 270)
+        """
+        frame_vis = frame.copy()
+        h, w = frame.shape[:2]
+        
+        for det in detections:
+            bbox = np.array(det['bbox'], dtype=np.float32)
+            landmarks = det['landmarks']
+            face_id = det.get('face_id', '')
+            
+            # 回転フレーム座標から元フレーム座標に逆変換
+            if angle == 0:
+                # 変換なし
+                bbox_orig = bbox
+                landmarks_orig = landmarks
+            elif angle == 90:
+                # 時計回り90度回転されたので、反時計回りに戻す
+                # rotated: (x, y) -> original: (h - y, x)
+                x1, y1, x2, y2 = bbox
+                landmarks_orig = {}
+                for name, (lm_x, lm_y) in landmarks.items():
+                    orig_x = h - lm_y
+                    orig_y = lm_x
+                    landmarks_orig[name] = (orig_x, orig_y)
+                bbox_orig = np.array([
+                    h - y2, x1, h - y1, x2
+                ], dtype=np.float32)
+            elif angle == 180:
+                # 180度回転されたので、180度戻す
+                # rotated: (x, y) -> original: (w - x, h - y)
+                x1, y1, x2, y2 = bbox
+                landmarks_orig = {}
+                for name, (lm_x, lm_y) in landmarks.items():
+                    orig_x = w - lm_x
+                    orig_y = h - lm_y
+                    landmarks_orig[name] = (orig_x, orig_y)
+                bbox_orig = np.array([
+                    w - x2, h - y2, w - x1, h - y1
+                ], dtype=np.float32)
+            elif angle == 270:
+                # 反時計回り90度回転されたので、時計回りに戻す
+                # rotated: (x, y) -> original: (y, w - x)
+                x1, y1, x2, y2 = bbox
+                landmarks_orig = {}
+                for name, (lm_x, lm_y) in landmarks.items():
+                    orig_x = lm_y
+                    orig_y = w - lm_x
+                    landmarks_orig[name] = (orig_x, orig_y)
+                bbox_orig = np.array([
+                    y1, w - x2, y2, w - x1
+                ], dtype=np.float32)
+            else:
+                bbox_orig = bbox
+                landmarks_orig = landmarks
+            
+            # bbox を描画
+            x1, y1, x2, y2 = [int(v) for v in bbox_orig]
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(frame_vis.shape[1], x2)
+            y2 = min(frame_vis.shape[0], y2)
+            
+            # 青い矩形で bbox を描画
+            cv2.rectangle(frame_vis, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            
+            # 顔 ID ラベルを描画
+            cv2.putText(
+                frame_vis, face_id,
+                (x1, max(y1 - 5, 15)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, (255, 0, 0), 1
+            )
+            
+            # 5点ランドマークを描画
+            for i, (name, coords) in enumerate(landmarks_orig.items()):
+                lm_x, lm_y = coords
+                lm_x, lm_y = int(lm_x), int(lm_y)
+                
+                # ランドマークが画像内に収まっているか確認
+                if 0 <= lm_x < frame_vis.shape[1] and 0 <= lm_y < frame_vis.shape[0]:
+                    # 赤い円でランドマークを描画
+                    cv2.circle(frame_vis, (lm_x, lm_y), 5, (0, 0, 255), -1)
+                    # 白い枠線
+                    cv2.circle(frame_vis, (lm_x, lm_y), 5, (255, 255, 255), 1)
+                    # ポイント番号を描画 (1-indexed)
+                    cv2.putText(
+                        frame_vis, str(i + 1),
+                        (lm_x + 7, lm_y - 2),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4, (255, 255, 255), 1
+                    )
+        
+        # 保存（JPG形式、品質90）
+        cv2.imwrite(output_path, frame_vis, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
 
 class MPGPURotator:
@@ -238,17 +355,57 @@ class FaceDetectionProcessor:
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
         
-        # モデル読み込み（簡略版 - 実装はプロジェクトの model/retinaface.py を使用）
+        # モデル読み込み
         self.model = None  # 後で initialize() で読み込む
         self.model_path = model_path
+        self.network = 'resnet50'
+        self.cfg = None
     
     def initialize(self):
         """モデルを初期化"""
-        # TODO: プロジェクトの RetinaFace モデルをインポート
-        # from models.retinaface import RetinaFace
-        # self.model = RetinaFace(...)
-        # self.model.load_state_dict(torch.load(self.model_path))
-        logger.info(f"モデル読み込み: {self.model_path}")
+        # network に応じた cfg を設定
+        if self.network == 'mobile0.25' or self.network == 'mobile0.25' :
+            self.cfg = cfg_mnet
+        else:
+            self.cfg = cfg_re50
+
+        logger.info(f"モデル読み込み: {self.model_path} (network={self.network})")
+        # net を作成
+        net = RetinaFace(cfg=self.cfg, phase='test')
+
+        # load weights (CPU/CUDA 両対応)
+        def remove_prefix(state_dict, prefix):
+            f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
+            return {f(key): value for key, value in state_dict.items()}
+
+        def load_model(model, pretrained_path):
+            logger.info(f"Loading pretrained model from {pretrained_path}")
+            if not torch.cuda.is_available() or self.device == 'cpu':
+                pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
+            else:
+                device = torch.cuda.current_device()
+                pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage.cuda(device))
+
+            if 'state_dict' in pretrained_dict.keys():
+                pretrained_dict = remove_prefix(pretrained_dict['state_dict'], 'module.')
+            else:
+                pretrained_dict = remove_prefix(pretrained_dict, 'module.')
+
+            net.load_state_dict(pretrained_dict, strict=False)
+            return net
+
+        self.model = load_model(net, self.model_path)
+        self.model.eval()
+
+        # device
+        if self.device == 'cuda' and torch.cuda.is_available():
+            self.device_torch = torch.device('cuda')
+            logger.info('Using CUDA device')
+        else:
+            self.device_torch = torch.device('cpu')
+            logger.info('Using CPU device')
+
+        self.model = self.model.to(self.device_torch)
     
     def detect_and_process_video(
         self,
@@ -297,6 +454,10 @@ class FaceDetectionProcessor:
         }
         
         for key, path in result_dirs.items():
+            # 既存ディレクトリをクリア
+            if os.path.exists(path):
+                shutil.rmtree(path)
+            # 新規作成
             os.makedirs(os.path.join(path, 'images'), exist_ok=True)
             os.makedirs(os.path.join(path, 'landmarks_qa'), exist_ok=True)
         
@@ -335,21 +496,78 @@ class FaceDetectionProcessor:
                         frame_gpu, angle, self.device
                     )
                     
-                    # CPU に戻して numpy に変換（検知用）
+                    # CPU に戻して numpy に変換（推論前処理用）
                     rotated_frame = rotated_frame_gpu.cpu().numpy().astype(np.uint8)
                     
-                    # 顔検知（※実装は別途 RetinaFace の detect() 使用）
-                    # dets, landmarks = self.model.detect(rotated_frame)
+                    # 前処理: RGB 変換・リサイズ・平均差し引き
+                    frame_rgb = cv2.cvtColor(rotated_frame, cv2.COLOR_BGR2RGB)
+                    img = np.float32(frame_rgb)
+                    im_height, im_width, _ = img.shape
+
+                    # model input size
+                    input_size = self.cfg.get('image_size', 640)
+                    resized = cv2.resize(img, (input_size, input_size))
+                    resized -= (104, 117, 123)
+                    resized = resized.transpose(2, 0, 1)
+                    resized = np.expand_dims(resized, 0)
+
+                    with torch.no_grad():
+                        x = torch.from_numpy(resized).to(self.device_torch)
+                        if x.dtype != torch.float32:
+                            x = x.float()
+                        loc, conf, landms = self.model(x)
+
+                    # numpy 化
+                    loc = loc.data.cpu().numpy()
+                    conf = conf.data.cpu().numpy()
+                    landms = landms.data.cpu().numpy()
+
+                    # priorbox + decode
+                    priorbox = PriorBox(self.cfg, image_size=(input_size, input_size), format="numpy")
+                    priors = priorbox.forward()
+                    boxes = decode(np.squeeze(loc, axis=0), priors, self.cfg['variance'])
                     
-                    # 仮: ダミー検知（実装時に削除）
-                    dets = np.array([[100, 100, 200, 200, 0.95]])  # dummy
-                    landmarks_list = [np.random.rand(5, 2) * 100 + 100]  # dummy
+                    # スケール: model input (640x640) から実際のフレームサイズへ
+                    # 重要: rotated_frame の実際のサイズでスケーリングする必要がある
+                    scale = np.array([im_width, im_height, im_width, im_height])
+                    boxes = boxes * scale / 1
                     
+                    scores = np.squeeze(conf, axis=0)[:, 1]
+                    landms_dec = decode_landm(np.squeeze(landms, axis=0), priors, self.cfg['variance'])
+                    scale1 = np.array([im_width, im_height] * 5)
+                    landms_dec = landms_dec * scale1 / 1
+
+                    # filter by confidence
+                    inds = np.where(scores > self.min_confidence)[0]
+                    if inds.shape[0] == 0:
+                        continue
+                    boxes = boxes[inds]
+                    landms_sel = landms_dec[inds]
+                    scores = scores[inds]
+
+                    order = scores.argsort()[::-1][:5000]
+                    boxes = boxes[order]
+                    landms_sel = landms_sel[order]
+                    scores = scores[order]
+
+                    dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+                    keep = py_cpu_nms(dets, 0.4)
+                    dets = dets[keep, :]
+                    landms_sel = landms_sel[keep]
+
+                    # limit
+                    dets = dets[:750, :]
+                    landms_sel = landms_sel[:750]
+
+                    # prepare landmarks list
+                    landmarks_list = [lm.reshape(5, 2) for lm in landms_sel]
+
                     results[rotation_key]['total'] += 1
-                    
-                    # 検知結果を保存
+
+                    # save
                     self._save_detection_results(
                         rotated_frame,
+                        frame,  # 元フレーム（angle 0用）
                         dets,
                         landmarks_list,
                         result_dirs[rotation_key],
@@ -377,7 +595,8 @@ class FaceDetectionProcessor:
     
     def _save_detection_results(
         self,
-        frame: np.ndarray,
+        rotated_frame: np.ndarray,
+        original_frame: np.ndarray,
         detections: np.ndarray,
         landmarks_list: List[np.ndarray],
         output_dir: str,
@@ -389,7 +608,8 @@ class FaceDetectionProcessor:
         検知結果を保存
         
         Args:
-            frame: 画像フレーム
+            rotated_frame: 回転後のフレーム
+            original_frame: 元のフレーム（frame_vis用）
             detections: [N, 5] bbox + confidence
             landmarks_list: List of [5, 2] landmarks
             output_dir: 出力ディレクトリ
@@ -405,6 +625,9 @@ class FaceDetectionProcessor:
         
         images_dir = os.path.join(output_dir, 'images')
         qa_dir = os.path.join(output_dir, 'landmarks_qa')
+        # Ensure directories exist (extra safety in case caller didn't create them)
+        os.makedirs(images_dir, exist_ok=True)
+        os.makedirs(qa_dir, exist_ok=True)
         
         metadata_list = []
         
@@ -422,21 +645,55 @@ class FaceDetectionProcessor:
             if min(face_width, face_height) < self.min_face_size:
                 continue
             
-            # 顔画像を保存
-            face_crop = frame[int(y1):int(y2), int(x1):int(x2)]
+            # 顔画像を保存（座標クリッピング & 空配列チェック）
+            h, w = rotated_frame.shape[:2]
+            
+            # bbox はフレーム全体（0～frame_width, 0～frame_height）に対する座標なので直接使用
+            # ちょうど抽出幅を生成するように clip
+            x1i = int(np.clip(np.floor(x1), 0, w))
+            y1i = int(np.clip(np.floor(y1), 0, h))
+            x2i = int(np.clip(np.ceil(x2), 0, w))
+            y2i = int(np.clip(np.ceil(y2), 0, h))
+
+            if x2i <= x1i or y2i <= y1i:
+                logger.warning(
+                    f"無効な bbox により顔切り出しをスキップします: face_id={face_id} bbox={bbox} frame_shape=(h={h},w={w})"
+                )
+                continue
+
+            # rotated_frame[y:y+h, x:x+w] でクロップ （行・列の順）
+            face_crop = rotated_frame[y1i:y2i, x1i:x2i]
+            if face_crop is None or face_crop.size == 0:
+                logger.warning(f"空の face_crop を検出してスキップします: face_id={face_id} dims={face_crop.shape if face_crop is not None else 'None'}")
+                continue
+
+            # 画像が非常に小さい場合もスキップ
+            if face_crop.shape[0] < 2 or face_crop.shape[1] < 2:
+                logger.warning(f"face_crop が小さすぎます: face_id={face_id} shape={face_crop.shape}")
+                continue
+
             face_path = os.path.join(images_dir, f"{face_id}.jpg")
-            cv2.imwrite(face_path, face_crop)
+            try:
+                ok = cv2.imwrite(face_path, face_crop)
+                if not ok:
+                    logger.warning(f"cv2.imwrite が失敗しました: {face_path}")
+                    continue
+            except Exception as e:
+                logger.warning(f"cv2.imwrite で例外: {e} path={face_path}")
+                continue
             
             # ランドマーク用の QA 画像を生成・保存
             if det_idx < len(landmarks_list):
                 landmarks = landmarks_list[det_idx]
                 qa_image = LandmarkMapper.draw_landmarks_on_image(
-                    frame, landmarks, bbox, output_size=128
+                    rotated_frame, landmarks, bbox, output_size=256
                 )
                 qa_path = os.path.join(qa_dir, f"{face_id}_marked.png")
                 qa_image.save(qa_path)
             
             # メタデータ
+            # bbox とランドマークは回転フレーム座標のままメタデータに保存
+            # (フレーム描画時に逆変換する）
             metadata_list.append({
                 'face_id': face_id,
                 'frame_id': frame_id,
@@ -463,6 +720,24 @@ class FaceDetectionProcessor:
         
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(existing, f, indent=2, ensure_ascii=False)
+        
+        # フレーム全体にランドマークを描画・保存
+        if len(metadata_list) > 0:
+            detections_for_frame = []
+            for meta in metadata_list:
+                detections_for_frame.append({
+                    'face_id': meta['face_id'],
+                    'bbox': meta['bbox'],
+                    'landmarks': meta['landmarks']
+                })
+            
+            frame_vis_dir = os.path.join(output_dir, 'frame_vis')
+            os.makedirs(frame_vis_dir, exist_ok=True)
+            frame_vis_path = os.path.join(frame_vis_dir, f"{frame_id:06d}_{angle:03d}_landmarks.jpg")
+            
+            LandmarkMapper.draw_landmarks_on_frame(
+                original_frame, detections_for_frame, frame_vis_path, angle=angle
+            )
 
     def _save_processing_manifest(
         self,
@@ -554,22 +829,33 @@ def main():
         choices=['cuda', 'cpu'],
         help='実行デバイス'
     )
-        parser.add_argument(
-            '--auto-version-naming',
-            type=lambda x: x.lower() in ('true', '1', 'yes'),
-            default=False,
-            help='バージョン名を自動生成（detected_faces_v001, v002, ...）'
-        )
+    parser.add_argument(
+        '--network',
+        type=str,
+        default='resnet50',
+        choices=['mobile0.25', 'resnet50'],
+        help='バックボーンネットワーク'
+    )
+    parser.add_argument(
+        '--auto-version-naming',
+        type=lambda x: x.lower() in ('true', '1', 'yes'),
+        default=False,
+        help='バージョン名を自動生成（detected_faces_v001, v002, ...）'
+    )
     
     args = parser.parse_args()
     
     try:
+        import time
+        start_time = time.time()
+        
         processor = FaceDetectionProcessor(
             model_path=args.model_path,
             device=args.device,
             min_confidence=args.min_confidence,
             min_face_size=args.min_face_size
         )
+        processor.network = args.network
         processor.initialize()
         
         results = processor.detect_and_process_video(
@@ -579,12 +865,24 @@ def main():
             auto_version_naming=args.auto_version_naming
         )
         
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        # 処理されたフレーム数を計算（originalの'total'フィールドが実処理フレーム数）
+        processed_frames = results['original']['total']
+        
+        # フレームレート計算
+        fps = processed_frames / total_time if total_time > 0 else 0
+        
         print("\n" + "="*60)
         print("検知結果サマリー")
         print("="*60)
         for rotation, stats in results.items():
             print(f"{rotation}: "
                   f"検知数 {stats['detected']}/{stats['total']}")
+        print("="*60)
+        print(f"処理時間: {total_time:.1f}秒")
+        print(f"フレームレート: {fps:.2f} FPS ({processed_frames}フレーム)")
         print("="*60 + "\n")
         
         return 0
