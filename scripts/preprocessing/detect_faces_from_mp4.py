@@ -23,9 +23,11 @@ import os
 import json
 import argparse
 import logging
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 import uuid
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -39,6 +41,36 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def auto_generate_version_name(data_dir: str) -> str:
+    """
+    既存のバージョンフォルダから次のバージョン番号を自動生成
+    
+    例: detected_faces_v001, detected_faces_v002, ... → 次は v003
+    
+    Args:
+        data_dir: data/ ディレクトリパス
+    
+    Returns:
+        'v001', 'v002', ... など
+    """
+    existing = list(Path(data_dir).glob('detected_faces_v*'))
+    
+    if not existing:
+        return 'v001'
+    
+    versions = []
+    for folder in existing:
+        match = re.match(r'detected_faces_v(\d+)', folder.name)
+        if match:
+            versions.append(int(match.group(1)))
+    
+    if versions:
+        next_version = max(versions) + 1
+        return f'v{next_version:03d}'
+    
+    return 'v001'
 
 
 class LandmarkMapper:
@@ -222,19 +254,31 @@ class FaceDetectionProcessor:
         self,
         video_path: str,
         output_dir: str,
-        frame_skip: int = 5
+        frame_skip: int = 5,
+        auto_version_naming: bool = False
     ) -> Dict[str, Any]:
         """
         動画から顔検知と QA 画像生成
         
         Args:
             video_path: 入力 MP4 パス
-            output_dir: 出力ディレクトリ
+            output_dir: 出力ディレクトリ（またはその親ディレクトリ）
             frame_skip: フレームスキップ数
+            auto_version_naming: バージョン名を自動生成するか
         
         Returns:
             処理結果の統計
         """
+        # バージョン名を自動生成
+        if auto_version_naming:
+            version_name = auto_generate_version_name(output_dir)
+            output_subdir = f'detected_faces_{version_name}'
+            final_output_dir = os.path.join(output_dir, output_subdir)
+            logger.info(f"自動バージョン生成: {version_name} → {output_subdir}/")
+        else:
+            final_output_dir = output_dir
+            version_name = None
+        
         cap = cv2.VideoCapture(video_path)
         
         if not cap.isOpened():
@@ -246,10 +290,10 @@ class FaceDetectionProcessor:
         
         # 出力ディレクトリの初期化
         result_dirs = {
-            'original': os.path.join(output_dir, 'original'),
-            'rotated_90': os.path.join(output_dir, 'rotated_90'),
-            'rotated_180': os.path.join(output_dir, 'rotated_180'),
-            'rotated_270': os.path.join(output_dir, 'rotated_270'),
+            'original': os.path.join(final_output_dir, 'original'),
+            'rotated_90': os.path.join(final_output_dir, 'rotated_90'),
+            'rotated_180': os.path.join(final_output_dir, 'rotated_180'),
+            'rotated_270': os.path.join(final_output_dir, 'rotated_270'),
         }
         
         for key, path in result_dirs.items():
@@ -320,6 +364,14 @@ class FaceDetectionProcessor:
             cap.release()
         
         logger.info(f"処理完了: {processed_count} フレーム処理")
+        
+        # メタデータを保存
+        self._save_processing_manifest(
+            final_output_dir,
+            version_name,
+            video_path,
+            results
+        )
         
         return results
     
@@ -412,6 +464,47 @@ class FaceDetectionProcessor:
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(existing, f, indent=2, ensure_ascii=False)
 
+    def _save_processing_manifest(
+        self,
+        output_dir: str,
+        version_name: str,
+        video_path: str,
+        results: Dict[str, Any]
+    ):
+        """
+        処理マニフェストを保存
+        
+        Args:
+            output_dir: 出力ディレクトリ
+            version_name: バージョン名（自動生成時）
+            video_path: 入力動画パス
+            results: 処理結果
+        """
+        manifest = {
+            'version': version_name,
+            'video_path': video_path,
+            'processing_date': datetime.now().isoformat(),
+            'device': self.device,
+            'results': {}
+        }
+        
+        # 各回転の統計
+        total_detected = 0
+        for rotation, stats in results.items():
+            manifest['results'][rotation] = {
+                'total_frames': stats['total'],
+                'detected_faces': stats['detected']
+            }
+            total_detected += stats['detected']
+        
+        manifest['total_detected_faces'] = total_detected
+        
+        manifest_path = os.path.join(output_dir, 'processing_manifest.json')
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"処理マニフェスト保存: {manifest_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -461,6 +554,12 @@ def main():
         choices=['cuda', 'cpu'],
         help='実行デバイス'
     )
+        parser.add_argument(
+            '--auto-version-naming',
+            type=lambda x: x.lower() in ('true', '1', 'yes'),
+            default=False,
+            help='バージョン名を自動生成（detected_faces_v001, v002, ...）'
+        )
     
     args = parser.parse_args()
     
@@ -476,7 +575,8 @@ def main():
         results = processor.detect_and_process_video(
             video_path=args.video_path,
             output_dir=args.output_dir,
-            frame_skip=args.frame_skip
+            frame_skip=args.frame_skip,
+            auto_version_naming=args.auto_version_naming
         )
         
         print("\n" + "="*60)
