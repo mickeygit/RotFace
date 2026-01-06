@@ -6,17 +6,17 @@ MP4 からの顔検検知と 5点ポイントマッピング画像の生成
 - MP4 をフレームスキップしながら読み込み
 - GPU メモリ内で回転 (0°, 90°, 180°, 270°)
 - RetinaFace で顔検知
-- 5点ポイント（目・鼻・口）を描画した QA 作業用画像（128x128）を出力
+- 5点ポイント（目・鼻・口）を描画した QA 作業用画像（256x256 PNG）を出力
 - 検知結果（bbox, landmarks, metadata）を各回転ディレクトリに保存
 
 使用方法:
-    python scripts/preprocessing/detect_faces_from_mp4.py \
-      --video_path input_videos/video.mp4 \
-      --model_path weights/original/Resnet50_Final.pth \
-      --output_dir data/detected_faces \
-      --frame_skip 5 \
-      --min_confidence 0.9 \
-      --min_face_size 10
+        python scripts/preprocessing/detect_faces_from_mp4.py \
+            --video-path input_videos/video.mp4 \
+            --model-path weights/original/Resnet50_Final.pth \
+            --output-dir data/detected_faces \
+            --frame-skip 5 \
+            --min-confidence 0.9 \
+            --min-face-size 10
 """
 
 import os
@@ -496,7 +496,7 @@ class FaceDetectionProcessor:
                         frame_gpu, angle, self.device
                     )
                     
-                    # CPU に戻して numpy に変換
+                    # CPU に戻して numpy に変換（推論前処理用）
                     rotated_frame = rotated_frame_gpu.cpu().numpy().astype(np.uint8)
                     
                     # 前処理: RGB 変換・リサイズ・平均差し引き
@@ -868,12 +868,11 @@ def main():
         end_time = time.time()
         total_time = end_time - start_time
         
-        # 処理されたフレーム数を計算
-        processed_frames = sum(stats['total'] for stats in results.values())
+        # 処理されたフレーム数を計算（originalの'total'フィールドが実処理フレーム数）
+        processed_frames = results['original']['total']
         
-        # フレームレート計算（4角度での検知なので、実フレーム = processed_frames / 4）
-        actual_processed_frames = processed_frames // 4 if processed_frames > 0 else 0
-        fps = actual_processed_frames / total_time if total_time > 0 else 0
+        # フレームレート計算
+        fps = processed_frames / total_time if total_time > 0 else 0
         
         print("\n" + "="*60)
         print("検知結果サマリー")
@@ -883,7 +882,7 @@ def main():
                   f"検知数 {stats['detected']}/{stats['total']}")
         print("="*60)
         print(f"処理時間: {total_time:.1f}秒")
-        print(f"フレームレート: {fps:.2f} FPS ({actual_processed_frames}フレーム)")
+        print(f"フレームレート: {fps:.2f} FPS ({processed_frames}フレーム)")
         print("="*60 + "\n")
         
         return 0

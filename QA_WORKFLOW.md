@@ -6,14 +6,14 @@
 data/detected_faces/
 ├── original/
 │   ├── images/                     # 顔トリミング画像（原寸）
-│   ├── landmarks_qa/               # ★QA作業用：5点ポイント描画済み(128x128)
+│   ├── landmarks_qa/               # ★QA作業用：5点ポイント描画済み(256x256 PNG)
 │   ├── bboxes.json                 # バウンディングボックス
 │   ├── metadata.json               # スコア・信頼度
 │   └── qa_approved_ids.txt         # QA確認済みID一覧（テスト）
 │
 ├── rotated_90/
 │   ├── images/
-│   ├── landmarks_qa/               # ★ 5点ポイント描画済み(128x128)
+│   ├── landmarks_qa/               # ★ 5点ポイント描画済み(256x256 PNG)
 │   ├── bboxes.json
 │   ├── metadata.json
 │   └── qa_approved_ids.txt
@@ -38,16 +38,18 @@ data/detected_faces/
 ### フェーズ 2-1: 自動生成（detect_faces_from_mp4.py の出力）
 ```bash
 docker run ... python scripts/preprocessing/detect_faces_from_mp4.py \
-  --video_path /workspace/input_videos/video.mp4 \
-  --model_path /workspace/weights/original/Resnet50_Final.pth \
-  --output_dir /workspace/data/detected_faces \
-  --frame_skip 5 \
-  --save_landmarks_qa        # ← 5点ポイント描画済み画像も生成
+    --video-path /workspace/input_videos/video.mp4 \
+    --model-path /workspace/weights/original/Resnet50_Final.pth \
+    --output-dir /workspace/data/detected_faces \
+    --frame-skip 5 \
+    --min-confidence 0.9 \
+    --min-face-size 10 \
+    --network resnet50        # ← 5点ポイント描画済み画像も生成
 ```
 
 **出力内容：**
 - `images/{id}.jpg` — 元サイズの顔画像
-- `landmarks_qa/{id}_marked.png` — 5点ポイント描画済み(128x128) ← QA作業用
+- `landmarks_qa/{id}_marked.png` — 5点ポイント描画済み(256x256 PNG) ← QA作業用
 
 ### フェーズ 2-2: 人による確認・削除
 ホスト側で `data/detected_faces/original/landmarks_qa/` を開き、
@@ -120,7 +122,7 @@ def qa_cleanup(detected_dir, remove_orphans=True):
 ```
 [1. MP4 読み込み＋検知]
     ↓
-[2. 5点ポイント描画済み画像(128x128)を landmarks_qa/ に出力]
+[2. 5点ポイント描画済み画像(256x256)を landmarks_qa/ に出力]
     ↓
 [3. 人が landmarks_qa/ で確認 → 不正なファイルを削除]
     ↓
@@ -135,7 +137,7 @@ def qa_cleanup(detected_dir, remove_orphans=True):
 
 1. **detect_faces_from_mp4.py** を実装
    - 5点ポイントの推定
-   - landmarks_qa/ に 128x128 マッピング画像を出力
+    - landmarks_qa/ に 256x256 マッピング画像を出力
    - images/ に元画像を保存
 
 2. **qa_cleanup.py** を実装

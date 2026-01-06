@@ -21,25 +21,25 @@ RotFace/
 │   ├── detected_faces/                 # RetinaFace で検知した顔データ
 │   │   ├── original/                  # 回転なし（既存データ維持用）
 │   │   │   ├── images/               # トリミング顔画像
-│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(128x128)
+│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(256x256 PNG)
 │   │   │   ├── bboxes.json           # バウンディングボックス
 │   │   │   ├── metadata.json         # スコア・ランドマーク
 │   │   │   └── qa_approved_ids.txt   # ★QA承認済み ID リスト
 │   │   ├── rotated_90/               # 90° 回転検知用
 │   │   │   ├── images/
-│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(128x128)
+│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(256x256 PNG)
 │   │   │   ├── bboxes.json
 │   │   │   ├── metadata.json
 │   │   │   └── qa_approved_ids.txt
 │   │   ├── rotated_180/
 │   │   │   ├── images/
-│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(128x128)
+│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(256x256 PNG)
 │   │   │   ├── bboxes.json
 │   │   │   ├── metadata.json
 │   │   │   └── qa_approved_ids.txt
 │   │   ├── rotated_270/
 │   │   │   ├── images/
-│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(128x128)
+│   │   │   ├── landmarks_qa/         # ★QA用：5点ポイント描画済み(256x256 PNG)
 │   │   │   ├── bboxes.json
 │   │   │   ├── metadata.json
 │   │   │   └── qa_approved_ids.txt
@@ -112,28 +112,31 @@ RotFace/
 
 ```bash
 docker run --rm --gpus all \
-  -v "$(pwd)/input_videos:/workspace/input_videos" \
-  -v "$(pwd)/weights/original:/workspace/weights/original" \
-  -v "$(pwd)/data/detected_faces:/workspace/data/detected_faces" \
-  rotface:latest python scripts/preprocessing/detect_faces_from_mp4.py \
-  --video_path /workspace/input_videos/video.mp4 \
-  --model_path /workspace/weights/original/Resnet50_Final.pth \
-  --output_dir /workspace/data/detected_faces \
-  --frame_skip 5 \
-  --min_confidence 0.9 \
-  --gpu_device cuda
+   -v "$(pwd)/input_videos:/workspace/input_videos" \
+   -v "$(pwd)/weights/original:/workspace/weights/original" \
+   -v "$(pwd)/data/detected_faces:/workspace/data/detected_faces" \
+   rotface:latest python scripts/preprocessing/detect_faces_from_mp4.py \
+   --video-path /workspace/input_videos/video.mp4 \
+   --model-path /workspace/weights/original/Resnet50_Final.pth \
+   --output-dir /workspace/data/detected_faces \
+   --frame-skip 5 \
+   --min-confidence 0.9 \
+   --min-face-size 10 \
+   --network resnet50
 ```
 
 **出力**:
 - `data/detected_faces/{original,rotated_90,rotated_180,rotated_270}/images/` — 顔トリミング画像
-- `data/detected_faces/{original,rotated_90,rotated_180,rotated_270}/landmarks_qa/` — **5点ポイント描画済み画像（128x128）** ← QA作業用
+- `data/detected_faces/{original,rotated_90,rotated_180,rotated_270}/landmarks_qa/` — **5点ポイント描画済み画像（256x256 PNG）** ← QA作業用
 - `data/detected_faces/{rotation}/metadata.json` — スコア・ランドマーク情報
+ - `data/detected_faces/{rotation}/frame_vis/` — フレーム全体可視化画像（JPG、bbox+ランドマーク）
+ - `data/detected_faces/{rotation}/metadata.json` — スコア・ランドマーク情報
 
 ### フェーズ 2: QA チェック（マニュアル確認・削除）
 
 **手順**:
 1. ホストのファイルエクスプローラで `data/detected_faces/original/landmarks_qa/` を開く
-2. 5点ポイント描画済みの 128x128 サムネイル画像で確認
+2. 5点ポイント描画済みの 256x256 サムネイル画像で確認
 3. ✅ 正常な顔 → そのまま
 4. ❌ 誤検知・ノイズ → ファイルを削除
 
