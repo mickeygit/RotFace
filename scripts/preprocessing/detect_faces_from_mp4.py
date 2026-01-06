@@ -485,7 +485,8 @@ class FaceDetectionProcessor:
         video_path: str,
         output_dir: str,
         frame_skip: int = 5,
-        auto_version_naming: bool = False
+        auto_version_naming: bool = False,
+        save_frame_vis: bool = False
     ) -> Dict[str, Any]:
         """
         動画から顔検知と QA 画像生成
@@ -646,7 +647,8 @@ class FaceDetectionProcessor:
                         result_dirs[rotation_key],
                         frame_count,
                         angle,
-                        results[rotation_key]
+                        results[rotation_key],
+                        save_frame_vis=save_frame_vis
                     )
                 
                 frame_count += 1
@@ -676,6 +678,7 @@ class FaceDetectionProcessor:
         frame_id: int,
         angle: int,
         results: Dict[str, Any]
+        , save_frame_vis: bool = False
     ):
         """
         検知結果を保存
@@ -777,9 +780,9 @@ class FaceDetectionProcessor:
                 lm_evals[name] = eval_val
                 annotations.append({'orig': (lm_x, lm_y), 'rel': (rel_x, rel_y), 'eval': eval_val})
 
-            qa_image = LandmarkMapper.draw_landmarks_on_image(
-                rotated_frame, landmarks, bbox, output_size=256, annotations=annotations
-            )
+                qa_image = LandmarkMapper.draw_landmarks_on_image(
+                    rotated_frame, landmarks, bbox, output_size=256, annotations=annotations, face_confidence=float(confidence)
+                )
             qa_path = os.path.join(qa_dir, f"{face_id}_marked.jpg")
             try:
                 qa_image.save(qa_path, format='JPEG', quality=90)
@@ -827,8 +830,8 @@ class FaceDetectionProcessor:
         with open(metadata_file, 'w', encoding='utf-8') as f:
             json.dump(existing, f, indent=2, ensure_ascii=False)
         
-        # フレーム全体にランドマークを描画・保存
-        if len(metadata_list) > 0:
+        # フレーム全体にランドマークを描画・保存（オプション）
+        if len(metadata_list) > 0 and save_frame_vis:
             detections_for_frame = []
             for meta in metadata_list:
                 detections_for_frame.append({
@@ -837,11 +840,11 @@ class FaceDetectionProcessor:
                     'landmarks': meta['landmarks'],
                     'confidence': meta.get('confidence')
                 })
-            
+
             frame_vis_dir = os.path.join(output_dir, 'frame_vis')
             os.makedirs(frame_vis_dir, exist_ok=True)
             frame_vis_path = os.path.join(frame_vis_dir, f"{frame_id:06d}_{angle:03d}_landmarks.jpg")
-            
+
             LandmarkMapper.draw_landmarks_on_frame(
                 original_frame, detections_for_frame, frame_vis_path, angle=angle
             )
@@ -950,6 +953,12 @@ def main():
         default=False,
         help='バージョン名を自動生成（detected_faces_v001, v002, ...）'
     )
+    parser.add_argument(
+        '--save-frame-vis',
+        type=lambda x: x.lower() in ('true', '1', 'yes'),
+        default=False,
+        help='フレーム全体の可視化画像(frame_vis)を保存するか（デフォルト: False）'
+    )
     
     args = parser.parse_args()
     
@@ -970,7 +979,8 @@ def main():
             video_path=args.video_path,
             output_dir=args.output_dir,
             frame_skip=args.frame_skip,
-            auto_version_naming=args.auto_version_naming
+            auto_version_naming=args.auto_version_naming,
+            save_frame_vis=args.save_frame_vis
         )
         
         end_time = time.time()
