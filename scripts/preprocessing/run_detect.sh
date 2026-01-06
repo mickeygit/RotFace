@@ -6,8 +6,8 @@ set -euo pipefail
 
 DEFAULT_VIDEO="/mnt/c/Users/mickey/Downloads/dfltest/REBD-827.hvec.mp4"
 DEFAULT_MODEL="weights/original/Resnet50_Final.pth"
-DEFAULT_OUTPUT="data"
-DEFAULT_FRAME_SKIP=5
+DEFAULT_OUTPUT="data/detected_faces"
+DEFAULT_FRAME_SKIP=30
 DEFAULT_NETWORK="resnet50"
 USE_DOCKER=1
 AUTO_VERSION=0

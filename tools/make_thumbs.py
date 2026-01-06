@@ -21,8 +21,11 @@ for p in orig_images:
     op=str(dst_root/'images'/p.name)
     cv2.imwrite(op, thumb)
     print('wrote',op)
-    qa_name=p.stem + '_marked.png'
-    qa_src=src_root/'original'/'landmarks_qa'/qa_name
+    qa_name_jpg = p.stem + '_marked.jpg'
+    qa_name_png = p.stem + '_marked.png'
+    qa_src = src_root/'original'/'landmarks_qa'/qa_name_jpg
+    if not qa_src.exists():
+        qa_src = src_root/'original'/'landmarks_qa'/qa_name_png
     if qa_src.exists():
         qa=cv2.imread(str(qa_src))
         if qa is not None:
@@ -30,7 +33,7 @@ for p in orig_images:
             scale=256/max(h,w)
             new=(max(1,int(w*scale)), max(1,int(h*scale)))
             thumbs=cv2.resize(qa,new)
-            qaop=str(dst_root/'landmarks_qa'/qa_name)
+            qaop=str(dst_root/'landmarks_qa'/qa_src.name)
             cv2.imwrite(qaop, thumbs)
             print('wrote',qaop)
 print('done')

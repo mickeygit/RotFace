@@ -142,6 +142,16 @@ class LandmarkMapper:
         
         # ポイント座標を出力画像座標にマッピング
         # 元画像座標 → 顔トリミング座標 → リサイズ後座標
+        # 色マップ（PIL）: 目・鼻・口を判別しやすい色にする
+        # ユーザ指定: 目=赤, 鼻=緑, 口=紺
+        color_map = {
+            'left_eye': 'red',
+            'right_eye': 'red',
+            'nose': 'green',
+            'left_mouth': 'navy',
+            'right_mouth': 'navy'
+        }
+
         for i, landmark in enumerate(landmarks):
             lm_x, lm_y = landmark
             
@@ -159,12 +169,14 @@ class LandmarkMapper:
             
             # 画像内に収まっているか確認
             if 0 <= final_x < output_size and 0 <= final_y < output_size:
-                # ポイント描画（赤い円 + ID） - より大きく見やすく
+                # ポイント描画（色はランドマーク種別ごとに変更）
                 radius = 6
+                lm_name = LandmarkMapper.LANDMARK_NAMES[i]
+                fill_col = color_map.get(lm_name, 'red')
                 draw.ellipse(
                     [(final_x - radius, final_y - radius),
                      (final_x + radius, final_y + radius)],
-                    fill='red', outline='white', width=2
+                    fill=fill_col, outline='white', width=2
                 )
                 # ポイント ID を描画（1-indexed）
                 draw.text(
@@ -300,15 +312,25 @@ class LandmarkMapper:
                 0.5, (255, 0, 0), 1
             )
             
-            # 5点ランドマークを描画
+            # 5点ランドマークを描画（色分け）
+            # ユーザ指定: 目=赤, 鼻=緑, 口=紺（BGR）
+            cv_color_map = {
+                'left_eye': (0, 0, 255),   # red (B,G,R)
+                'right_eye': (0, 0, 255),
+                'nose': (0, 255, 0),       # green
+                'left_mouth': (128, 0, 0), # navy (dark blue) in BGR
+                'right_mouth': (128, 0, 0)
+            }
+
             for i, (name, coords) in enumerate(landmarks_orig.items()):
                 lm_x, lm_y = coords
                 lm_x, lm_y = int(lm_x), int(lm_y)
-                
+
                 # ランドマークが画像内に収まっているか確認
                 if 0 <= lm_x < frame_vis.shape[1] and 0 <= lm_y < frame_vis.shape[0]:
-                    # 赤い円でランドマークを描画
-                    cv2.circle(frame_vis, (lm_x, lm_y), 5, (0, 0, 255), -1)
+                    # 色分けして円でランドマークを描画
+                    col = cv_color_map.get(name, (0, 0, 255))
+                    cv2.circle(frame_vis, (lm_x, lm_y), 5, col, -1)
                     # 白い枠線
                     cv2.circle(frame_vis, (lm_x, lm_y), 5, (255, 255, 255), 1)
                     # ポイント番号を描画 (1-indexed)
@@ -391,6 +413,20 @@ class FaceDetectionProcessor:
             self.cfg = cfg_mnet
         else:
             self.cfg = cfg_re50
+        # Ensure torchvision/torch hub downloads are cached under the repo to
+        # avoid repeated downloads. This directory is mounted into the container
+        # so cached files persist on the host (e.g. resnet50-0676ba61.pth).
+        try:
+            repo_root = os.getcwd()
+            cache_dir = os.path.join(repo_root, 'weights', 'cache')
+            os.makedirs(cache_dir, exist_ok=True)
+            os.environ.setdefault('TORCH_HOME', cache_dir)
+            try:
+                torch.hub.set_dir(cache_dir)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         logger.info(f"モデル読み込み: {self.model_path} (network={self.network})")
         # net を作成
@@ -730,8 +766,12 @@ class FaceDetectionProcessor:
             qa_image = LandmarkMapper.draw_landmarks_on_image(
                 rotated_frame, landmarks, bbox, output_size=256, annotations=annotations
             )
-            qa_path = os.path.join(qa_dir, f"{face_id}_marked.png")
-            qa_image.save(qa_path)
+            qa_path = os.path.join(qa_dir, f"{face_id}_marked.jpg")
+            try:
+                qa_image.save(qa_path, format='JPEG', quality=90)
+            except Exception:
+                # fallback
+                qa_image.save(qa_path)
             
             # メタデータ
             # bbox とランドマークは回転フレーム座標のままメタデータに保存
