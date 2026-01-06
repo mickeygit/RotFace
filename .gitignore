@@ -164,3 +164,21 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# Project-specific ignores
+# Build outputs, exported models and runtime artifacts
+/output/
+/runs/
+
+# Saved original model weights stored by helper scripts
+/weights/original/
+
+# Local pip userbase used in container
+/piplib/
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
