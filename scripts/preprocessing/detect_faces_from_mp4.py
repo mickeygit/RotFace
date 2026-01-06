@@ -19,17 +19,19 @@ MP4 からの顔検検知と 5点ポイントマッピング画像の生成
       --min_face_size 10
 """
 
-import os
-import json
-import argparse
-import logging
-import re
-from pathlib import Path
-from typing import Dict, List, Tuple, Any
-import uuid
-from datetime import datetime
-
+# RetinaFace utilities
 import cv2
+import numpy as np
+import torch
+import torch.nn.functional as F
+from PIL import Image, ImageDraw
+
+# RetinaFace utilities
+from data.config import cfg_mnet, cfg_re50
+from layers.functions.prior_box import PriorBox
+from utils.nms.py_cpu_nms import py_cpu_nms
+from utils.box_utils import decode, decode_landm
+from models.retinaface import RetinaFace
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -238,17 +240,57 @@ class FaceDetectionProcessor:
         self.min_confidence = min_confidence
         self.min_face_size = min_face_size
         
-        # モデル読み込み（簡略版 - 実装はプロジェクトの model/retinaface.py を使用）
+        # モデル読み込み
         self.model = None  # 後で initialize() で読み込む
         self.model_path = model_path
+        self.network = 'resnet50'
+        self.cfg = None
     
     def initialize(self):
         """モデルを初期化"""
-        # TODO: プロジェクトの RetinaFace モデルをインポート
-        # from models.retinaface import RetinaFace
-        # self.model = RetinaFace(...)
-        # self.model.load_state_dict(torch.load(self.model_path))
-        logger.info(f"モデル読み込み: {self.model_path}")
+        # network に応じた cfg を設定
+        if self.network == 'mobile0.25' or self.network == 'mobile0.25' :
+            self.cfg = cfg_mnet
+        else:
+            self.cfg = cfg_re50
+
+        logger.info(f"モデル読み込み: {self.model_path} (network={self.network})")
+        # net を作成
+        net = RetinaFace(cfg=self.cfg, phase='test')
+
+        # load weights (CPU/CUDA 両対応)
+        def remove_prefix(state_dict, prefix):
+            f = lambda x: x.split(prefix, 1)[-1] if x.startswith(prefix) else x
+            return {f(key): value for key, value in state_dict.items()}
+
+        def load_model(model, pretrained_path):
+            logger.info(f"Loading pretrained model from {pretrained_path}")
+            if not torch.cuda.is_available() or self.device == 'cpu':
+                pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
+            else:
+                device = torch.cuda.current_device()
+                pretrained_dict = torch.load(pretrained_path, map_location=lambda storage, loc: storage.cuda(device))
+
+            if 'state_dict' in pretrained_dict.keys():
+                pretrained_dict = remove_prefix(pretrained_dict['state_dict'], 'module.')
+            else:
+                pretrained_dict = remove_prefix(pretrained_dict, 'module.')
+
+            net.load_state_dict(pretrained_dict, strict=False)
+            return net
+
+        self.model = load_model(net, self.model_path)
+        self.model.eval()
+
+        # device
+        if self.device == 'cuda' and torch.cuda.is_available():
+            self.device_torch = torch.device('cuda')
+            logger.info('Using CUDA device')
+        else:
+            self.device_torch = torch.device('cpu')
+            logger.info('Using CPU device')
+
+        self.model = self.model.to(self.device_torch)
     
     def detect_and_process_video(
         self,
@@ -338,16 +380,68 @@ class FaceDetectionProcessor:
                     # CPU に戻して numpy に変換（検知用）
                     rotated_frame = rotated_frame_gpu.cpu().numpy().astype(np.uint8)
                     
-                    # 顔検知（※実装は別途 RetinaFace の detect() 使用）
-                    # dets, landmarks = self.model.detect(rotated_frame)
-                    
-                    # 仮: ダミー検知（実装時に削除）
-                    dets = np.array([[100, 100, 200, 200, 0.95]])  # dummy
-                    landmarks_list = [np.random.rand(5, 2) * 100 + 100]  # dummy
-                    
+                    # 前処理: RGB 変換・リサイズ・平均差し引き
+                    frame_rgb = cv2.cvtColor(rotated_frame, cv2.COLOR_BGR2RGB)
+                    img = np.float32(frame_rgb)
+                    im_height, im_width, _ = img.shape
+
+                    # model input size
+                    input_size = self.cfg.get('image_size', 640)
+                    resized = cv2.resize(img, (input_size, input_size))
+                    scale = np.array([resized.shape[1], resized.shape[0], resized.shape[1], resized.shape[0]])
+                    resized -= (104, 117, 123)
+                    resized = resized.transpose(2, 0, 1)
+                    resized = np.expand_dims(resized, 0)
+
+                    with torch.no_grad():
+                        x = torch.from_numpy(resized).to(self.device_torch)
+                        if x.dtype != torch.float32:
+                            x = x.float()
+                        loc, conf, landms = self.model(x)
+
+                    # numpy 化
+                    loc = loc.data.cpu().numpy()
+                    conf = conf.data.cpu().numpy()
+                    landms = landms.data.cpu().numpy()
+
+                    # priorbox + decode
+                    priorbox = PriorBox(self.cfg, image_size=(input_size, input_size), format="numpy")
+                    priors = priorbox.forward()
+                    boxes = decode(np.squeeze(loc, axis=0), priors, self.cfg['variance'])
+                    boxes = boxes * scale / 1
+                    scores = np.squeeze(conf, axis=0)[:, 1]
+                    landms_dec = decode_landm(np.squeeze(landms, axis=0), priors, self.cfg['variance'])
+                    scale1 = np.array([input_size, input_size] * 5)
+                    landms_dec = landms_dec * scale1 / 1
+
+                    # filter by confidence
+                    inds = np.where(scores > self.min_confidence)[0]
+                    if inds.shape[0] == 0:
+                        continue
+                    boxes = boxes[inds]
+                    landms_sel = landms_dec[inds]
+                    scores = scores[inds]
+
+                    order = scores.argsort()[::-1][:5000]
+                    boxes = boxes[order]
+                    landms_sel = landms_sel[order]
+                    scores = scores[order]
+
+                    dets = np.hstack((boxes, scores[:, np.newaxis])).astype(np.float32, copy=False)
+                    keep = py_cpu_nms(dets, 0.4)
+                    dets = dets[keep, :]
+                    landms_sel = landms_sel[keep]
+
+                    # limit
+                    dets = dets[:750, :]
+                    landms_sel = landms_sel[:750]
+
+                    # prepare landmarks list
+                    landmarks_list = [lm.reshape(5, 2) for lm in landms_sel]
+
                     results[rotation_key]['total'] += 1
-                    
-                    # 検知結果を保存
+
+                    # save
                     self._save_detection_results(
                         rotated_frame,
                         dets,
@@ -554,12 +648,19 @@ def main():
         choices=['cuda', 'cpu'],
         help='実行デバイス'
     )
-        parser.add_argument(
-            '--auto-version-naming',
-            type=lambda x: x.lower() in ('true', '1', 'yes'),
-            default=False,
-            help='バージョン名を自動生成（detected_faces_v001, v002, ...）'
-        )
+    parser.add_argument(
+        '--network',
+        type=str,
+        default='resnet50',
+        choices=['mobile0.25', 'resnet50'],
+        help='バックボーンネットワーク'
+    )
+    parser.add_argument(
+        '--auto-version-naming',
+        type=lambda x: x.lower() in ('true', '1', 'yes'),
+        default=False,
+        help='バージョン名を自動生成（detected_faces_v001, v002, ...）'
+    )
     
     args = parser.parse_args()
     
@@ -570,6 +671,7 @@ def main():
             min_confidence=args.min_confidence,
             min_face_size=args.min_face_size
         )
+        processor.network = args.network
         processor.initialize()
         
         results = processor.detect_and_process_video(
