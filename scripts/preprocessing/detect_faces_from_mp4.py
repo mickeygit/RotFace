@@ -93,7 +93,8 @@ class LandmarkMapper:
         landmarks: np.ndarray,
         face_box: np.ndarray,
         output_size: int = 256
-        , annotations: Optional[List[Dict[str, Any]]] = None
+        , annotations: Optional[List[Dict[str, Any]]] = None,
+        face_confidence: Optional[float] = None
     ) -> Image.Image:
         """
         顔画像と 5点ポイントを QA 作業用画像に描画
@@ -207,6 +208,13 @@ class LandmarkMapper:
                         txt_y = final_y + radius + 3
                         for j, line in enumerate(txt_lines):
                             draw.text((txt_x, txt_y + j * 12), line, fill='yellow')
+        # 顔全体の検出スコアを描画
+        if face_confidence is not None:
+            try:
+                draw.text((6, 14), f"conf:{face_confidence:.2f}", fill='yellow')
+            except Exception:
+                pass
+
         return pil_image
     
     @staticmethod
@@ -305,8 +313,14 @@ class LandmarkMapper:
             cv2.rectangle(frame_vis, (x1, y1), (x2, y2), (255, 0, 0), 2)
             
             # 顔 ID ラベルを描画
+            # 顔 ID と信頼度ラベルを描画
+            conf = det.get('confidence') if isinstance(det, dict) else None
+            if conf is not None:
+                label = f"{face_id} {conf:.2f}"
+            else:
+                label = face_id
             cv2.putText(
-                frame_vis, face_id,
+                frame_vis, label,
                 (x1, max(y1 - 5, 15)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, (255, 0, 0), 1
@@ -820,7 +834,8 @@ class FaceDetectionProcessor:
                 detections_for_frame.append({
                     'face_id': meta['face_id'],
                     'bbox': meta['bbox'],
-                    'landmarks': meta['landmarks']
+                    'landmarks': meta['landmarks'],
+                    'confidence': meta.get('confidence')
                 })
             
             frame_vis_dir = os.path.join(output_dir, 'frame_vis')
@@ -830,6 +845,7 @@ class FaceDetectionProcessor:
             LandmarkMapper.draw_landmarks_on_frame(
                 original_frame, detections_for_frame, frame_vis_path, angle=angle
             )
+        
 
     def _save_processing_manifest(
         self,
