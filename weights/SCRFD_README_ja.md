@@ -31,6 +31,8 @@ python3 -c "from insightface.model_zoo import get_model; get_model('scrfd_34g_v2
 - **scrfd_10g**: 高精度（10G FLOPs）
 - **scrfd_34g**: 最高精度（34G FLOPs）← これが `scrfd_34g_bnkps.pth` です
 
+**命名に関する注意**: InsightFace のモデル Zoo では、SCRFD-34G モデルは `scrfd_34g_v2.0` として提供されています。ダウンロードされるファイル名は `scrfd_34g_v2.0.onnx` などになる場合があります。`scrfd_34g_bnkps.pth` は古い命名規則ですが、どちらも同じ SCRFD-34G モデルアーキテクチャを指します。
+
 ## 詳細情報
 
 詳しい情報は以下のファイルをご覧ください：

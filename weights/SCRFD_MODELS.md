@@ -29,6 +29,8 @@ pip3 install insightface onnxruntime
 
 This is the SCRFD model with 34G FLOPs, which provides a good balance between accuracy and speed.
 
+**Note about naming**: The InsightFace model zoo currently provides the SCRFD-34G model as `scrfd_34g_v2.0`. The file you download may be named `scrfd_34g_v2.0.onnx` or similar. The "bnkps" suffix in `scrfd_34g_bnkps.pth` refers to an older naming convention. Both refer to the same SCRFD-34G model architecture.
+
 ## Download Links
 
 SCRFD models are available from the InsightFace model zoo:

@@ -38,12 +38,13 @@ def download_scrfd_model(model_name: str, output_dir: str) -> bool:
     os.makedirs(output_dir, exist_ok=True)
     
     # Map model names to InsightFace model zoo names
+    # Note: InsightFace uses different naming conventions for different model versions
     model_map = {
         'scrfd_500m': 'scrfd_500m_bnkps',
         'scrfd_1g': 'scrfd_1g_bnkps',
         'scrfd_2.5g': 'scrfd_2.5g_bnkps',
         'scrfd_10g': 'scrfd_10g_bnkps',
-        'scrfd_34g': 'scrfd_34g_v2.0',
+        'scrfd_34g': 'scrfd_34g_v2.0',  # v2.0 is the latest version of 34G model
     }
     
     if model_name not in model_map:
@@ -61,14 +62,27 @@ def download_scrfd_model(model_name: str, output_dir: str) -> bool:
         print(f"✓ Successfully downloaded {model_name}")
         
         # Try to find the downloaded file
+        # InsightFace may download with different naming conventions
         output_path = Path(output_dir)
-        pth_files = list(output_path.glob(f"*{model_name}*.pth"))
-        onnx_files = list(output_path.glob(f"*{zoo_name}*.onnx"))
+        pth_files = list(output_path.glob("*.pth"))
+        onnx_files = list(output_path.glob("*.onnx"))
         
-        if pth_files:
-            print(f"  → PyTorch model: {pth_files[0]}")
-        if onnx_files:
-            print(f"  → ONNX model: {onnx_files[0]}")
+        # Filter for files that might be related to this model
+        relevant_pth = [f for f in pth_files if 'scrfd' in f.name.lower()]
+        relevant_onnx = [f for f in onnx_files if 'scrfd' in f.name.lower()]
+        
+        if relevant_pth:
+            print(f"  → PyTorch model files found:")
+            for f in relevant_pth:
+                print(f"     {f.name}")
+        if relevant_onnx:
+            print(f"  → ONNX model files found:")
+            for f in relevant_onnx:
+                print(f"     {f.name}")
+        
+        if not relevant_pth and not relevant_onnx:
+            print(f"  Note: Model downloaded successfully but files may be in a different format or location.")
+            print(f"  Check {output_dir} for downloaded files.")
         
         return True
     except Exception as e:
