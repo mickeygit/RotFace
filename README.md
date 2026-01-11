@@ -2,6 +2,8 @@
 
 This repository helps to convert retinface with `mobilenet` or `resnet50` backbones to `onnx`.
 
+> **Note**: Looking for SCRFD models? See [weights/SCRFD_MODELS.md](weights/SCRFD_MODELS.md) for information on downloading SCRFD models including `scrfd_34g_bnkps.pth`.
+
 ## 1. Install dependencies
 
 ```sh
@@ -10,9 +12,25 @@ pip3 install -r requirements.txt
 
 ## 2. Download weights
 
+### RetinaFace Models (Current Support)
+
 ```sh
 cd weights
 ./download-weights.sh
+```
+
+This will download the RetinaFace models (mobilenet0.25 and resnet50).
+
+### SCRFD Models (Alternative)
+
+For SCRFD models including `scrfd_34g_bnkps.pth`, see the detailed guide in [weights/SCRFD_MODELS.md](weights/SCRFD_MODELS.md).
+
+Quick download using InsightFace:
+
+```sh
+pip3 install insightface
+cd weights
+python3 -c "from insightface.model_zoo import get_model; get_model('scrfd_34g_v2.0', download=True, root='.')"
 ```
 
 ## 3. Export to onnx
