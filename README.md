@@ -3,6 +3,8 @@
 This repository helps to convert retinface with `mobilenet` or `resnet50` backbones to `onnx`.
 
 > **Note**: Looking for SCRFD models? See [weights/SCRFD_MODELS.md](weights/SCRFD_MODELS.md) for information on downloading SCRFD models including `scrfd_34g_bnkps.pth`.
+>
+> **日本語**: SCRFD モデル（`scrfd_34g_bnkps.pth`）をお探しの方は [weights/SCRFD_README_ja.md](weights/SCRFD_README_ja.md) をご覧ください。
 
 ## 1. Install dependencies
 
